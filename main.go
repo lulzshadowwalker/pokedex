@@ -5,16 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"time"
 
+	"github.com/lulzshadowwalker/pokedex/cache"
 	"github.com/lulzshadowwalker/pokedex/repl"
 )
 
 func main() {
 	registry := registry{
 		config: &config{
-			next: new("https://pokeapi.co/api/v2/location-area"),
+			next:  new("https://pokeapi.co/api/v2/location-area"),
+			cache: cache.New(5 * time.Second),
 		},
 		commands: make(map[string]command),
 	}
@@ -50,25 +54,40 @@ func main() {
 					return nil
 				}
 
-				response, err := http.Get(*config.next)
-				if err != nil {
-					return err
-				}
-				defer response.Body.Close()
+				url := *config.next
 
-				if response.StatusCode != http.StatusOK {
+				resolver := func() []byte {
+					response, err := http.Get(url)
+					if err != nil {
+						return nil
+					}
+					defer response.Body.Close()
+
+					if response.StatusCode != http.StatusOK {
+						return nil
+					}
+
+					bytes, err := io.ReadAll(response.Body)
+					if err != nil {
+						return nil
+					}
+
+					return bytes
+				}
+
+				bytes := config.cache.Remember(url, resolver, 5*time.Minute)
+				if bytes == nil {
 					return ErrUnknown
 				}
 
-				decoder := json.NewDecoder(response.Body)
 				data := struct {
 					Previous *string
-					Next *string
-					Results []struct{
+					Next     *string
+					Results  []struct {
 						Name string
 					}
 				}{}
-				if err := decoder.Decode(&data); err != nil {
+				if err := json.Unmarshal(bytes, &data); err != nil {
 					return err
 				}
 
@@ -91,25 +110,40 @@ func main() {
 					return nil
 				}
 
-				response, err := http.Get(*config.previous)
-				if err != nil {
-					return err
-				}
-				defer response.Body.Close()
+				url := *config.previous
 
-				if response.StatusCode != http.StatusOK {
+				resolver := func() []byte {
+					response, err := http.Get(url)
+					if err != nil {
+						return nil
+					}
+					defer response.Body.Close()
+
+					if response.StatusCode != http.StatusOK {
+						return nil
+					}
+
+					bytes, err := io.ReadAll(response.Body)
+					if err != nil {
+						return nil
+					}
+
+					return bytes
+				}
+
+				bytes := config.cache.Remember(url, resolver, 5*time.Minute)
+				if bytes == nil {
 					return ErrUnknown
 				}
 
-				decoder := json.NewDecoder(response.Body)
 				data := struct {
 					Previous *string
-					Next *string
-					Results []struct{
+					Next     *string
+					Results  []struct {
 						Name string
 					}
 				}{}
-				if err := decoder.Decode(&data); err != nil {
+				if err := json.Unmarshal(bytes, &data); err != nil {
 					return err
 				}
 
@@ -131,7 +165,7 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("Pokdex > ")
+		fmt.Print("Pokedex > ")
 		if ok := scanner.Scan(); !ok {
 			if err := scanner.Err(); err != nil {
 				fmt.Printf("failed to read from stdin: %q", err)
@@ -154,6 +188,7 @@ func main() {
 type config struct {
 	next     *string
 	previous *string
+	cache    *cache.Cache
 }
 
 type command struct {
