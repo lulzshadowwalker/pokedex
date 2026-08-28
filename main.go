@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"time"
@@ -17,8 +18,9 @@ import (
 func main() {
 	registry := registry{
 		config: &config{
-			next:  new("https://pokeapi.co/api/v2/location-area"),
-			cache: cache.New(5 * time.Second),
+			next:    new("https://pokeapi.co/api/v2/location-area"),
+			cache:   cache.New(5 * time.Second),
+			pokedex: make(map[string]Pokemon),
 		},
 		commands: make(map[string]command),
 	}
@@ -213,6 +215,64 @@ func main() {
 				return nil
 			},
 		},
+
+		{
+			name:        "catch",
+			description: "Catch a Pokemon and add it to your Pokedex",
+			callback: func(config *config, args []string) error {
+				if len(args) == 0 {
+					return ErrInvalidArgument
+				}
+
+				name := args[0]
+				fmt.Printf("Throwing a Pokeball at %s...\n", name)
+
+				url := "https://pokeapi.co/api/v2/pokemon/" + name
+
+				resolver := func() []byte {
+					response, err := http.Get(url)
+					if err != nil {
+						return nil
+					}
+					defer response.Body.Close()
+
+					if response.StatusCode != http.StatusOK {
+						return nil
+					}
+
+					bytes, err := io.ReadAll(response.Body)
+					if err != nil {
+						return nil
+					}
+
+					return bytes
+				}
+
+				bytes := config.cache.Remember(url, resolver, 5*time.Minute)
+				if bytes == nil {
+					return ErrUnknown
+				}
+
+				var pokemon Pokemon
+				if err := json.Unmarshal(bytes, &pokemon); err != nil {
+					return err
+				}
+
+				experience := pokemon.BaseExperience
+				if experience <= 0 {
+					experience = 1
+				}
+
+				if rand.Intn(experience) < 40 {
+					fmt.Printf("%s was caught!\n", pokemon.Name)
+					config.pokedex[pokemon.Name] = pokemon
+				} else {
+					fmt.Printf("%s escaped!\n", pokemon.Name)
+				}
+
+				return nil
+			},
+		},
 	}
 
 	for _, command := range commands {
@@ -245,6 +305,12 @@ type config struct {
 	next     *string
 	previous *string
 	cache    *cache.Cache
+	pokedex  map[string]Pokemon
+}
+
+type Pokemon struct {
+	Name           string `json:"name"`
+	BaseExperience int    `json:"base_experience"`
 }
 
 type command struct {
@@ -272,3 +338,4 @@ func (r *registry) run(name string, args []string) error {
 
 	return command.callback(r.config, args)
 }
+
